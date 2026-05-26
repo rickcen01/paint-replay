@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>你画我猜复盘器</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="sim">
+        <div class="phone" id="phone">
+          <div class="phone-bg">
+            <div class="status">下午8:32 <span>4G</span> <span>5G</span> <strong>91</strong></div>
+            <div class="topbar">
+              <button class="round">‹</button>
+              <div class="room" id="roomLabel">3374893房</div>
+              <button class="round">◉</button>
+              <button class="round">▣</button>
+              <button class="round">☰</button>
+            </div>
+            <div class="bubble">商城和背包在这里呦</div>
+            <div class="stage">
+              <div class="prompt"><span>◷</span><b id="timer">89</b><em id="word">复盘</em></div>
+              <div class="paper">
+                <div class="inner"></div>
+              </div>
+              <div class="lobby-panel" id="lobbyPanel">
+                <b id="lobbyTitle">等待准备</b>
+                <span id="readyCount">0/6 已准备</span>
+                <button id="phoneReadyBtn" type="button">准备</button>
+              </div>
+              <div class="choice-panel" id="choicePanel">
+                <b>请选择一个词</b>
+                <div id="choiceWords"></div>
+              </div>
+              <div class="result-panel" id="resultPanel">
+                <b id="answerLine">答案：复盘</b>
+                <span id="scoreLine">本轮得分已结算</span>
+              </div>
+              <div class="draw-tools" id="drawTools">
+                <span id="toolPen">▰</span><span id="toolPalette">●</span><span class="muted">◇</span><span id="toolBucket">◒</span><span>⇩</span><span id="toolUndo">↶</span><span id="toolRedo">↷</span>
+              </div>
+            </div>
+            <svg class="draw-layer" id="drawLayer" viewBox="0 0 1080 2280" aria-label="draw layer"></svg>
+            <div class="players" id="players"></div>
+            <div class="chat" id="chatList">
+              <p><b>小总管：</b>等待玩家准备</p>
+            </div>
+            <div class="input" id="phoneInput">绘画中不能发言 <span>＋</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="workbench">
+        <header class="bar">
+          <div>
+            <h1>你画我猜复盘器</h1>
+            <p>1080 × 2280 坐标，画板安全区 <code>x=170..880, y=390..1130</code></p>
+          </div>
+          <div class="actions">
+            <button id="runBtn">运行</button>
+            <button id="stopBtn">停止</button>
+            <button id="clearBtn">清空</button>
+          </div>
+        </header>
+
+        <div class="game-controls">
+          <label>阶段
+            <select id="phaseSelect">
+              <option value="lobby">准备</option>
+              <option value="countdown">倒计时</option>
+              <option value="choosing">选词</option>
+              <option value="drawing">我画</option>
+              <option value="guessing">别人画</option>
+              <option value="result">结算</option>
+            </select>
+          </label>
+          <label>当前画手
+            <select id="painterSelect"></select>
+          </label>
+          <label>猜词
+            <input id="guessInput" value="低筒袜" />
+          </label>
+          <button id="readyBtn" type="button">准备/取消</button>
+          <button id="startBtn" type="button">开始流程</button>
+          <button id="nextBtn" type="button">下一轮</button>
+          <label><input id="autoLoopToggle" type="checkbox" /> 自动倒计时</label>
+        </div>
+
+        <div class="settings">
+          <label>词语 <input id="wordInput" value="航天员" /></label>
+          <label>画笔 <span class="swatch-row" id="brushSwatches"></span></label>
+          <label>画布 <span class="swatch-row" id="canvasSwatches"></span></label>
+          <label>线宽 <span class="width-row" id="widthChoices"></span></label>
+          <label>笔间隔 <input id="delayInput" type="number" value="55" min="0" max="500" /></label>
+          <label>速度 <input id="speedInput" type="range" value="1" min="0.1" max="4" step="0.1" /></label>
+          <label><input id="safeToggle" type="checkbox" checked /> 安全区</label>
+          <label><input id="gridToggle" type="checkbox" /> 网格</label>
+        </div>
+
+        <textarea id="code" spellcheck="false"></textarea>
+
+        <footer class="report">
+          <div><b id="strokeCount">0</b><span>笔画</span></div>
+          <div><b id="timeEstimate">0.0s</b><span>预计</span></div>
+          <div><b id="boundsReport">-</b><span>边界</span></div>
+          <div><b id="statusText">就绪</b><span>状态</span></div>
+        </footer>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>
