@@ -60,6 +60,7 @@
           </div>
           <div class="actions">
             <button id="runBtn">运行</button>
+            <button id="debugBtn">调试</button>
             <button id="stopBtn">停止</button>
             <button id="clearBtn">清空</button>
           </div>
@@ -100,6 +101,14 @@
         </div>
 
         <textarea id="code" spellcheck="false"></textarea>
+
+        <section class="debug-panel" id="debugPanel">
+          <header>
+            <b>笔画调试</b>
+            <span id="debugSummary">点击“调试”后检查代码生成的每一笔是否能显示。</span>
+          </header>
+          <div class="debug-list" id="debugList"></div>
+        </section>
 
         <footer class="report">
           <div><b id="strokeCount">0</b><span>笔画</span></div>

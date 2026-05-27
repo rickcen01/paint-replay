@@ -43,6 +43,7 @@ const svg = document.getElementById("drawLayer");
 const phoneBg = document.querySelector(".phone-bg");
 const codeEl = document.getElementById("code");
 const runBtn = document.getElementById("runBtn");
+const debugBtn = document.getElementById("debugBtn");
 const stopBtn = document.getElementById("stopBtn");
 const clearBtn = document.getElementById("clearBtn");
 const roomLabel = document.getElementById("roomLabel");
@@ -81,11 +82,17 @@ const toolPalette = document.getElementById("toolPalette");
 const toolBucket = document.getElementById("toolBucket");
 const toolUndo = document.getElementById("toolUndo");
 const toolRedo = document.getElementById("toolRedo");
+const debugPanel = document.getElementById("debugPanel");
+const debugSummary = document.getElementById("debugSummary");
+const debugList = document.getElementById("debugList");
 
 let strokes = [];
 let redoStack = [];
 let stopRequested = false;
 let guides = [];
+let debugOverlays = [];
+let rejectedStrokes = [];
+let strokeSerial = 0;
 let selectedWidth = 8;
 let canvasColor = "#ffffff";
 let activeBrush = "black";
@@ -94,6 +101,8 @@ let autoTimer = null;
 
 let brush = {
   color: "#000000",
+  sourceColor: "black",
+  colorMapped: false,
   width: selectedWidth,
   duration: 150,
   delay: 55,
@@ -220,6 +229,12 @@ function colorEntry(value, fallback = "black") {
   return PALETTE.find((item) => item.id === aliases[text]) || PALETTE.find((item) => item.id === fallback) || PALETTE[0];
 }
 
+function exactPaletteReference(value, entry) {
+  const text = String(value || "").trim().toLowerCase();
+  const hex = normalizeHex(text);
+  return text === entry.id.toLowerCase() || value === entry.label || (hex && hex === entry.color.toLowerCase());
+}
+
 function setWord(value, category = game.category) {
   const text = String(value || "").trim() || "复盘";
   game.word = text;
@@ -282,6 +297,8 @@ function setBrush(next = {}) {
     const entry = colorEntry(next.color, activeBrush);
     activeBrush = entry.id;
     brush.color = entry.color;
+    brush.sourceColor = String(next.color);
+    brush.colorMapped = !exactPaletteReference(next.color, entry);
   }
   if (next.width) selectedWidth = Number(next.width) || selectedWidth;
   if (next.delay !== undefined) delayInput.value = String(next.delay);
@@ -298,7 +315,7 @@ function setCanvas(color = "white") {
 }
 
 function eraser(width = 28) {
-  brush = { ...brush, color: canvasColor, width, mode: "eraser" };
+  brush = { ...brush, color: canvasColor, sourceColor: "eraser", colorMapped: false, width, mode: "eraser" };
   setStatus("橡皮仅本地模拟");
 }
 
@@ -306,7 +323,14 @@ function pen(color = activeBrush, width = selectedWidth) {
   const entry = colorEntry(color, activeBrush);
   activeBrush = entry.id;
   selectedWidth = Number(width) || selectedWidth;
-  brush = { ...brush, color: entry.color, width: selectedWidth, mode: "pen" };
+  brush = {
+    ...brush,
+    color: entry.color,
+    sourceColor: String(color),
+    colorMapped: !exactPaletteReference(color, entry),
+    width: selectedWidth,
+    mode: "pen",
+  };
   renderToolControls();
 }
 
@@ -324,13 +348,27 @@ function round(value) {
 }
 
 function addStroke(points, options = {}) {
+  const serial = ++strokeSerial;
+  const command = options.command || "stroke";
   const clean = points
     .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
     .map(([x, y]) => [Number(x), Number(y)]);
-  if (clean.length < 2) return;
+  if (clean.length < 2) {
+    rejectedStrokes.push({
+      index: serial,
+      command,
+      reason: "有效坐标少于2个，无法形成一笔",
+      rawPoints: Array.isArray(points) ? points.length : 0,
+    });
+    return;
+  }
   strokes.push({
+    index: serial,
+    command,
     points: clean,
     color: options.color || brush.color,
+    sourceColor: brush.sourceColor,
+    colorMapped: Boolean(brush.colorMapped),
     width: Number(options.width || brush.width),
     duration: Math.max(Number(options.duration || brush.duration), 1),
     delay: Math.max(Number(options.delay ?? brush.delay), 0),
@@ -338,6 +376,8 @@ function addStroke(points, options = {}) {
     join: brush.join,
     oob: clean.some(pointOutOfBounds),
     mode: brush.mode,
+    rawPoints: Array.isArray(points) ? points.length : clean.length,
+    invalidPoints: Array.isArray(points) ? points.length - clean.length : 0,
   });
   redoStack = [];
 }
@@ -348,31 +388,35 @@ function sw(x1, y1, x2, y2, ms = brush.duration) {
       [x1, y1],
       [x2, y2],
     ],
-    { duration: ms },
+    { duration: ms, command: "sw" },
   );
 }
 
 const swipe = sw;
 const line = sw;
 
-function poly(points, close = false, ms = brush.duration) {
+function poly(points, close = false, ms = brush.duration, command = "poly") {
   const pts = close ? [...points, points[0]] : points;
   for (let i = 0; i < pts.length - 1; i += 1) {
-    addStroke([pts[i], pts[i + 1]], { duration: ms });
+    addStroke([pts[i], pts[i + 1]], { duration: ms, command: `${command}:${i + 1}` });
   }
 }
 
 function polygon(points, ms = brush.duration) {
-  poly(points, true, ms);
+  poly(points, true, ms, "polygon");
 }
 
-function ell(cx, cy, rx, ry, steps = 16, start = 0, end = Math.PI * 2, ms = brush.duration) {
+function ellipsePoints(cx, cy, rx, ry, steps = 16, start = 0, end = Math.PI * 2) {
   const pts = [];
   for (let i = 0; i <= steps; i += 1) {
     const t = start + ((end - start) * i) / steps;
     pts.push([cx + Math.cos(t) * rx, cy + Math.sin(t) * ry]);
   }
-  addStroke(pts, { duration: ms });
+  return pts;
+}
+
+function ell(cx, cy, rx, ry, steps = 16, start = 0, end = Math.PI * 2, ms = brush.duration) {
+  addStroke(ellipsePoints(cx, cy, rx, ry, steps, start, end), { duration: ms, command: "ell" });
 }
 
 const ellipse = ell;
@@ -387,13 +431,13 @@ function bez(p0, p1, p2, p3, steps = 10, ms = brush.duration) {
       u ** 3 * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t ** 3 * p3[1],
     ]);
   }
-  addStroke(pts, { duration: ms });
+  addStroke(pts, { duration: ms, command: "bez" });
 }
 
 const bezier = bez;
 
 function dot(cx, cy, r = 5, steps = 8) {
-  ell(cx, cy, r, r, steps, 0, Math.PI * 2, Math.max(brush.duration * 0.8, 80));
+  addStroke(ellipsePoints(cx, cy, r, r, steps), { duration: Math.max(brush.duration * 0.8, 80), command: "dot" });
 }
 
 function star(cx, cy, scale = 1) {
@@ -410,6 +454,7 @@ function star(cx, cy, scale = 1) {
     ],
     true,
     Math.max(brush.duration * 0.85, 90),
+    "star",
   );
 }
 
@@ -537,11 +582,25 @@ function clearDrawing(update = true) {
   stopRequested = true;
   strokes = [];
   redoStack = [];
+  rejectedStrokes = [];
+  strokeSerial = 0;
   [...svg.querySelectorAll(".stroke")].forEach((node) => node.remove());
+  clearDebugOverlays();
+  clearDebugReport();
   if (update) {
     updateStats();
     setStatus("已清空");
   }
+}
+
+function clearDebugOverlays() {
+  debugOverlays.forEach((node) => node.remove());
+  debugOverlays = [];
+}
+
+function clearDebugReport() {
+  debugSummary.textContent = "点击“调试”后检查代码生成的每一笔是否能显示。";
+  debugList.innerHTML = "";
 }
 
 function undoStroke() {
@@ -599,6 +658,7 @@ function addGuideLine(x1, y1, x2, y2, color, width, dash) {
 function appendPath(stroke, animate) {
   const path = ns("path");
   path.classList.add("stroke");
+  path.dataset.strokeIndex = String(stroke.index);
   path.setAttribute("d", pathData(stroke.points));
   path.setAttribute("fill", "none");
   path.setAttribute("stroke", stroke.color);
@@ -620,12 +680,14 @@ function appendPath(stroke, animate) {
 
 function renderStrokes(animate) {
   [...svg.querySelectorAll(".stroke")].forEach((node) => node.remove());
+  clearDebugOverlays();
   for (const stroke of strokes) appendPath(stroke, animate);
 }
 
 async function play() {
   stopRequested = false;
   [...svg.querySelectorAll(".stroke")].forEach((node) => node.remove());
+  clearDebugOverlays();
   setStatus("绘制中");
   const speed = Number(speedInput.value) || 1;
   for (const stroke of strokes) {
@@ -643,6 +705,167 @@ function updateStats() {
   timeEstimate.textContent = `${(total / 1000).toFixed(1)}s`;
   boundsReport.textContent = oob ? `${oob} 笔越界` : "正常";
   boundsReport.style.color = oob ? "#c0362c" : "#1f7a4d";
+}
+
+function estimateLength(points) {
+  let total = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    total += Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]);
+  }
+  return total;
+}
+
+function strokeBounds(points) {
+  const xs = points.map((point) => point[0]);
+  const ys = points.map((point) => point[1]);
+  return {
+    left: Math.min(...xs),
+    right: Math.max(...xs),
+    top: Math.min(...ys),
+    bottom: Math.max(...ys),
+  };
+}
+
+function rectIntersects(a, b) {
+  return a.right >= b.left && a.left <= b.right && a.bottom >= b.top && a.top <= b.bottom;
+}
+
+function rectInside(a, b) {
+  return a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;
+}
+
+function colorDistanceHex(a, b) {
+  const left = normalizeHex(a) || "#000000";
+  const right = normalizeHex(b) || "#ffffff";
+  const x = hexToRgb(left);
+  const y = hexToRgb(right);
+  return Math.sqrt(distance(x, y));
+}
+
+function renderedPathLength(node) {
+  if (!node) return 0;
+  try {
+    return node.getTotalLength();
+  } catch {
+    return 0;
+  }
+}
+
+function analyzeRender() {
+  const pathNodes = [...svg.querySelectorAll(".stroke")];
+  const items = strokes.map((stroke) => {
+    const node = svg.querySelector(`.stroke[data-stroke-index="${stroke.index}"]`);
+    const bounds = strokeBounds(stroke.points);
+    const estimated = estimateLength(stroke.points);
+    const rendered = renderedPathLength(node);
+    const errors = [];
+    const warnings = [];
+
+    if (!node) errors.push("没有生成SVG路径");
+    if (rendered < 1 || estimated < 1) errors.push("长度过短，基本不可见");
+    if (!rectIntersects(bounds, BOARD)) errors.push("完全在画纸外");
+    if (colorDistanceHex(stroke.color, canvasColor) < 18) errors.push("颜色与画布几乎相同");
+    if (!rectInside(bounds, BOARD)) warnings.push("部分在画纸外");
+    if (!rectInside(bounds, SAFE)) warnings.push("超出安全区");
+    if (stroke.colorMapped) warnings.push(`颜色${stroke.sourceColor}已映射为${stroke.color}`);
+    if (stroke.invalidPoints > 0) warnings.push(`${stroke.invalidPoints}个无效坐标被忽略`);
+    if (stroke.mode === "eraser") warnings.push("橡皮只做本地模拟，真机暂未确认");
+    if (stroke.width < 3) warnings.push("线宽过细");
+    if (stroke.duration < Math.min(650, Math.max(110, estimated * 0.35))) warnings.push("真机手势可能过快");
+
+    const severity = errors.length ? "error" : warnings.length ? "warn" : "ok";
+    return {
+      ...stroke,
+      bounds,
+      estimated,
+      rendered,
+      severity,
+      problems: [...errors, ...warnings],
+    };
+  });
+
+  const rejected = rejectedStrokes.map((stroke) => ({ ...stroke, severity: "rejected" }));
+  const errorCount = items.filter((item) => item.severity === "error").length;
+  const warnCount = items.filter((item) => item.severity === "warn").length;
+  const visibleCount = items.filter((item) => item.severity !== "error").length;
+  return {
+    planned: strokes.length + rejectedStrokes.length,
+    generated: strokes.length,
+    rendered: pathNodes.length,
+    visible: visibleCount,
+    errors: errorCount,
+    warnings: warnCount,
+    rejected: rejectedStrokes.length,
+    items,
+    rejectedItems: rejected,
+  };
+}
+
+function renderDebugReport(report) {
+  renderDebugOverlays(report.items);
+  debugSummary.textContent = `计划 ${report.planned} 笔，生成 ${report.generated} 笔，SVG ${report.rendered} 条，可见 ${report.visible} 条，问题 ${report.errors}，风险 ${report.warnings}，丢弃 ${report.rejected}`;
+  debugList.innerHTML = "";
+  const rows = [
+    ...report.items,
+    ...report.rejectedItems.map((item) => ({
+      index: item.index,
+      command: item.command,
+      severity: "rejected",
+      width: "-",
+      color: "-",
+      estimated: 0,
+      rendered: 0,
+      problems: [item.reason],
+    })),
+  ];
+  for (const item of rows) {
+    const row = document.createElement("div");
+    row.className = `debug-item ${item.severity}`;
+    const lengthText = `${Math.round(item.rendered || item.estimated || 0)}px`;
+    row.innerHTML = [
+      `<strong>#${item.index}</strong>`,
+      `<code>${escapeHtml(item.command || "stroke")} · ${escapeHtml(String(item.color || "-"))} · ${escapeHtml(String(item.width || "-"))}px · ${lengthText}</code>`,
+      `<span>${escapeHtml(item.problems.length ? item.problems.join("；") : "正常")}</span>`,
+    ].join("");
+    debugList.appendChild(row);
+  }
+}
+
+function renderDebugOverlays(items) {
+  clearDebugOverlays();
+  for (const item of items) {
+    if (!item.points || !item.points.length) continue;
+    const [x, y] = item.points[0];
+    const group = ns("g");
+    group.classList.add("debug-overlay");
+    const circle = ns("circle");
+    circle.setAttribute("cx", x);
+    circle.setAttribute("cy", y);
+    circle.setAttribute("r", "15");
+    circle.setAttribute("fill", item.severity === "error" ? "#ef4444" : item.severity === "warn" ? "#f59e0b" : "#22c55e");
+    circle.setAttribute("stroke", "#111318");
+    circle.setAttribute("stroke-width", "2");
+    const label = ns("text");
+    label.setAttribute("x", x);
+    label.setAttribute("y", y + 5);
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("font-size", "18");
+    label.setAttribute("font-weight", "800");
+    label.setAttribute("fill", "#111318");
+    label.textContent = String(item.index);
+    group.append(circle, label);
+    svg.appendChild(group);
+    debugOverlays.push(group);
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function phaseText() {
@@ -841,13 +1064,19 @@ function getApi() {
   };
 }
 
-async function runCode() {
+function prepareExecution() {
   stopRequested = true;
   [...svg.querySelectorAll(".stroke")].forEach((node) => node.remove());
+  clearDebugOverlays();
+  clearDebugReport();
   strokes = [];
   redoStack = [];
+  rejectedStrokes = [];
+  strokeSerial = 0;
   brush = {
     color: colorEntry(activeBrush).color,
+    sourceColor: activeBrush,
+    colorMapped: false,
     width: selectedWidth,
     duration: 150,
     delay: Number(delayInput.value) || 0,
@@ -861,14 +1090,22 @@ async function runCode() {
     game.phase = "drawing";
     game.timer = PHASE_DURATION.drawing;
   }
+}
+
+async function evaluateCode() {
+  const api = getApi();
+  const names = Object.keys(api);
+  const values = Object.values(api);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const fn = new AsyncFunction(...names, `"use strict";\n${codeEl.value}`);
+  await fn(...values);
+}
+
+async function runCode() {
+  prepareExecution();
   setStatus("解析中");
   try {
-    const api = getApi();
-    const names = Object.keys(api);
-    const values = Object.values(api);
-    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-    const fn = new AsyncFunction(...names, `"use strict";\n${codeEl.value}`);
-    await fn(...values);
+    await evaluateCode();
     updateStats();
     renderGame();
     await play();
@@ -879,8 +1116,33 @@ async function runCode() {
   }
 }
 
+async function debugCode() {
+  prepareExecution();
+  setStatus("调试中");
+  try {
+    await evaluateCode();
+    updateStats();
+    renderGame();
+    renderStrokes(false);
+    const report = analyzeRender();
+    renderDebugReport(report);
+    if (report.errors || report.rejected) {
+      setStatus("发现问题");
+    } else if (report.warnings) {
+      setStatus("有风险");
+    } else {
+      setStatus("调试通过");
+    }
+  } catch (error) {
+    setStatus("代码错误");
+    console.error(error);
+    alert(error.message || String(error));
+  }
+}
+
 function bindEvents() {
   runBtn.addEventListener("click", runCode);
+  debugBtn.addEventListener("click", debugCode);
   stopBtn.addEventListener("click", () => {
     stopRequested = true;
     setStatus("已停止");
@@ -936,7 +1198,10 @@ function init() {
   renderGame();
   updateStats();
   bindEvents();
-  if (new URLSearchParams(window.location.search).get("autorun") === "1") {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("autodebug") === "1") {
+    window.setTimeout(() => debugCode(), 80);
+  } else if (params.get("autorun") === "1") {
     window.setTimeout(() => runCode(), 80);
   }
 }
